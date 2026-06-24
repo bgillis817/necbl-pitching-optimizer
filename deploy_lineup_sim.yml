@@ -1,0 +1,65 @@
+name: Build & Deploy Matchup Sim
+
+on:
+  schedule:
+    - cron: '0 11 * * *'
+  workflow_dispatch:
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Install R and system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            r-base r-base-dev \
+            r-cran-tidyverse r-cran-lubridate \
+            libcurl4-openssl-dev libssl-dev libxml2-dev \
+            libfontconfig1-dev libharfbuzz-dev libfribidi-dev \
+            libfreetype6-dev libpng-dev libtiff5-dev libjpeg-dev
+
+      - name: Install remaining R packages
+        run: |
+          sudo R -e "install.packages(c('xgboost','bslib','reactable','plotly','googledrive','gargle','bit64','rsconnect','shiny','curl'), repos='https://cloud.r-project.org')"
+
+      - name: Clone your model repos (run-value fn + xwOBACON model)
+        run: |
+          git clone --depth 1 https://github.com/bgillis817/NECBLStuffPlus.git necbl_sp
+          git clone --depth 1 https://github.com/bgillis817/xStatsNECBL.git    necbl_xs
+
+      - name: Write Google service account key
+        env:
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+        run: echo "$GDRIVE_SERVICE_ACCOUNT_JSON" > gdrive_key.json
+
+      - name: Build artifacts (reads Navs CSVs folder from Drive)
+        env:
+          GDRIVE_KEY_PATH: gdrive_key.json
+          DRIVE_FOLDER: "Navs CSVs"
+        run: sudo -E Rscript build_all.R
+
+      - name: Remove service account key
+        if: always()
+        run: rm -f gdrive_key.json
+
+      - name: Deploy to shinyapps.io
+        env:
+          SHINYAPPS_ACCOUNT: ${{ secrets.SHINYAPPS_ACCOUNT }}
+          SHINYAPPS_TOKEN:   ${{ secrets.SHINYAPPS_TOKEN }}
+          SHINYAPPS_SECRET:  ${{ secrets.SHINYAPPS_SECRET }}
+        run: |
+          sudo -E Rscript -e "
+            rsconnect::setAccountInfo(
+              name=Sys.getenv('SHINYAPPS_ACCOUNT'), token=Sys.getenv('SHINYAPPS_TOKEN'),
+              secret=Sys.getenv('SHINYAPPS_SECRET'))
+            rsconnect::deployApp(
+              appDir='.', appPrimaryDoc='app_continuous.R',
+              appFiles=c('app_continuous.R','continuous_common.R','matchup_kernel_continuous.R',
+                         'lineup_sim_continuous.R', list.files('data', full.names=TRUE)),
+              appName='necblmatchupsim', forceUpdate=TRUE)
+          "
