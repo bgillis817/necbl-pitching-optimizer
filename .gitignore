@@ -1,6 +1,4 @@
-sa_key.json
 data/*.rds
-data/pitches_cache.rds
 necbl_sp/
 necbl_xs/
 gdrive_key.json

@@ -12,13 +12,16 @@ ADV <- list(s2_score=0.5, s1_to3=0.3, d1_score=0.6)
 resolve_lineup_c <- function(km, batters, season=NULL) {
   meta <- km$ho$meta
   if (!is.null(season)) meta <- meta %>% filter(season==as.character(season))
-  meta <- meta %>% distinct(Batter, BatterSide)
+  side <- meta %>% distinct(Batter, BatterSide) %>%
+    group_by(Batter) %>%
+    summarise(BatterSide = if (n() > 1) "Switch" else BatterSide[1], .groups="drop")
   tibble(Batter=batters) %>%
-    left_join(meta, by="Batter") %>%
+    left_join(side, by="Batter") %>%
     mutate(BatterSide = ifelse(is.na(BatterSide), "Right", BatterSide))
 }
 team_lineup_c <- function(km, team, season, n=9) {
   km$ho$meta %>% filter(season==as.character(season), BatterTeam==team) %>%
+    group_by(Batter) %>% summarise(pa = sum(pa), .groups="drop") %>%
     arrange(desc(pa)) %>% head(n) %>% pull(Batter)
 }
 
