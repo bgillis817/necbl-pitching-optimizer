@@ -91,7 +91,7 @@ rank_matchups <- function(km, lineup, pitcher_ids, season, innings=6, n_sims=150
 # arms_df: tibble(PitcherId, length)  (length = batters faced, min 1).
 # Finds the ORDER of arms minimizing total outing xRV. Exact for <=7 arms,
 # greedy beyond. TTO is taken from the lineup turn (pos %/% 9).
-sequence_xrv <- function(km, lineup, arms_df, season) {
+sequence_xrv <- function(km, lineup, arms_df, season, starter=NULL) {
   arms_df <- as_tibble(arms_df)
   arms_df$length <- pmax(1L, as.integer(arms_df$length))
   ids <- arms_df$PitcherId; len <- setNames(arms_df$length, ids)
@@ -114,19 +114,61 @@ sequence_xrv <- function(km, lineup, arms_df, season) {
     }
     tot
   }
-  if (length(ids) <= 7) {
-    perms <- gtools::permutations(length(ids), length(ids), ids)
+  # if a starter is fixed, only optimize the order of the remaining arms,
+  # then prepend the starter to every candidate order.
+  fixed <- if (!is.null(starter) && starter %in% ids) starter else NULL
+  free  <- if (is.null(fixed)) ids else setdiff(ids, fixed)
+  prepend <- function(ord) if (is.null(fixed)) ord else c(fixed, ord)
+  if (length(free) <= 7) {
+    if (length(free) == 0) { ord <- prepend(character())
+      return(tibble(order = paste(ord, collapse=" \u2192 "), xrv = eval_order(ord))) }
+    perms <- gtools::permutations(length(free), length(free), free)
     res <- map_dfr(seq_len(nrow(perms)), function(i){
-      ord <- perms[i,]; tibble(order = paste(ord, collapse=" \u2192 "), xrv = eval_order(ord)) })
+      ord <- prepend(perms[i,]); tibble(order = paste(ord, collapse=" \u2192 "), xrv = eval_order(ord)) })
     res %>% arrange(xrv)
   } else {
     # greedy: build the order one arm at a time, picking the next arm that
     # yields the lowest running xRV given what's placed so far.
-    rem <- ids; ord <- character()
+    rem <- free; ord <- if (is.null(fixed)) character() else fixed
     while (length(rem)) {
       best <- map_dfr(rem, function(p) tibble(p=p, x=eval_order(c(ord,p))))
       pick <- best$p[which.min(best$x)]; ord <- c(ord, pick); rem <- setdiff(rem, pick)
     }
     tibble(order = paste(ord, collapse=" \u2192 "), xrv = eval_order(ord))
   }
+}
+
+# per-arm segment breakdown for a chosen sequence (drill-down)
+sequence_detail <- function(km, lineup, order_ids, lens, season){
+  pos <- 0L; out <- list()
+  for (pid in order_ids){
+    n <- lens[[pid]]; xs <- 0; faced <- character()
+    for (j in seq_len(n)){
+      slot <- (pos %% length(lineup)) + 1
+      tto  <- min(pos %/% length(lineup) + 1, 3)
+      xs <- xs + pa_eval(km, lineup[slot], season, pid, tto)$xrv
+      faced <- c(faced, lineup[slot]); pos <- pos + 1L
+    }
+    out[[length(out)+1]] <- tibble(PitcherId=pid, batters=n,
+                                   segment_xrv=xs, faced=paste(faced, collapse=", "))
+  }
+  bind_rows(out)
+}
+
+# full MC run distribution for a specific arm sequence (drill-down chart)
+sim_sequence <- function(km, lineup, order_ids, lens, season, n_sims=2500) {
+  L <- length(lineup); pos <- 0L; rows <- list()
+  for (pid in order_ids) {
+    for (j in seq_len(lens[[pid]])) {
+      slot <- (pos %% L) + 1; tto <- min(pos %/% L + 1, 3)
+      e <- pa_eval(km, lineup[slot], season, pid, tto)
+      rows[[length(rows)+1]] <- tibble(slot=slot, Batter=lineup[slot], pid=pid,
+                                       tto=tto, xrv=e$xrv, line=list(e$line))
+      pos <- pos + 1L
+    }
+  }
+  rows <- bind_rows(rows)
+  runs <- outing_mc(rows, n_sims)
+  list(runs=runs, xrv=sum(rows$xrv), mean_runs=mean(runs),
+       p10=quantile(runs,.10), p90=quantile(runs,.90), scoreless=mean(runs==0))
 }
