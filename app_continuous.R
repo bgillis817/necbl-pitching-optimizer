@@ -15,6 +15,7 @@ km <- load_cont_kernel("data")
 CURRENT_SEASON <- "2026"
 PITCHERS <- km$po$buckets %>% filter(season==CURRENT_SEASON) %>%
   distinct(PitcherId, Pitcher, PitcherTeam) %>%
+  filter(!is.na(PitcherId), !is.na(Pitcher), Pitcher != "") %>%
   mutate(label = paste0(Pitcher," (",PitcherTeam,")")) %>% arrange(Pitcher)
 pid_of  <- function(l) PITCHERS$PitcherId[match(l, PITCHERS$label)]
 TEAMS   <- sort(unique(km$ho$meta$BatterTeam[km$ho$meta$season==CURRENT_SEASON]))
@@ -40,8 +41,8 @@ ui <- page_navbar(title="NECBL Matchup Sim", theme=navy,
         selectizeInput("seqarms","Available arms", choices=PITCHERS$label, multiple=TRUE),
         selectizeInput("seqstarter","Starter (optional \u2014 locks 1st)", choices=PITCHERS$label,
                        multiple=FALSE, options=list(placeholder="none", allowEmptyOption=TRUE, onInitialize=I('function(){this.setValue("");}'))),
-        textInput("seqlens","Batters per arm (comma, matches order above; min 1)","18,6,6"),
-        p("Finds the order with the lowest total outing xRV.", class="text-muted small")),
+        uiOutput("seqlen_ui"),
+        p("Set how many batters each arm goes. Finds the order with the lowest total xRV.", class="text-muted small")),
       sliderInput("innings","Innings", 1, 9, 6),
       sliderInput("sims","MC sims", 500, 5000, 2500, step=500),
       actionButton("go","Run", class="btn-primary w-100"),
@@ -65,6 +66,24 @@ server <- function(input, output, session){
       choices=choices, selected=sel, multiple=TRUE, options=list(maxItems=9))
   })
   lineup <- reactive({ req(input$batters); input$batters })
+  # arm order for the sequencer: starter first (auto-included), then the rest
+  seq_arm_order <- reactive({
+    req(input$seqarms)
+    st <- if (!is.null(input$seqstarter) && nzchar(input$seqstarter)) input$seqstarter else NULL
+    a <- input$seqarms
+    if (!is.null(st)) a <- c(st, setdiff(a, st))
+    unique(a)
+  })
+  output$seqlen_ui <- renderUI({
+    a <- seq_arm_order(); st <- input$seqstarter
+    tagList(
+      tags$b("Batters per arm", class="small"),
+      lapply(seq_along(a), function(i){
+        tag <- if (!is.null(st) && nzchar(st) && a[i]==st) "  (starter)" else ""
+        numericInput(paste0("len_", i), paste0(i, ". ", a[i], tag),
+                     value = if (i==1) 18 else 6, min = 1, step = 1)
+      }))
+  })
   output$lineup_tbl <- renderReactable({
     d <- resolve_lineup_c(km, lineup(), CURRENT_SEASON) %>% mutate(Slot=row_number()) %>%
       select(Slot, Batter, Side=BatterSide)
@@ -85,23 +104,15 @@ server <- function(input, output, session){
         left_join(PITCHERS %>% select(PitcherId, Pitcher), by="PitcherId")
       list(kind="rank", ctx=ctx, tbl=tbl)
     } else {
-      req(length(input$seqarms)>=1)
-      lens <- as.integer(str_split(input$seqlens, ",")[[1]])
-      # starter: include even if not in the available list (auto-add to front)
-      starter_lbl <- if (!is.null(input$seqstarter) && nzchar(input$seqstarter)) input$seqstarter else NULL
-      arm_lbls <- input$seqarms
-      if (!is.null(starter_lbl) && !(starter_lbl %in% arm_lbls)) arm_lbls <- c(starter_lbl, arm_lbls)
-      lens <- head(rep(lens, length.out=length(arm_lbls)), length(arm_lbls))
-      arms_df <- tibble(PitcherId = pid_of(arm_lbls), length = pmax(1L, lens))
-      starter_pid <- if (!is.null(starter_lbl)) pid_of(starter_lbl) else NULL
-      tbl <- sequence_xrv(km, lineup(), arms_df, CURRENT_SEASON, starter=starter_pid)
-      nm <- PITCHERS %>% select(PitcherId, Pitcher)
-      relabel <- function(s) reduce(seq_len(nrow(nm)), function(a,i)
-        gsub(nm$PitcherId[i], nm$Pitcher[i], a, fixed=TRUE), .init=s)
-      tbl$order_ids <- tbl$order
-      tbl <- tbl %>% mutate(order = map_chr(order, relabel))
-      list(kind="seq", ctx=ctx, tbl=tbl,
-           lens=setNames(arms_df$length, arms_df$PitcherId))
+      a <- seq_arm_order(); req(length(a) >= 1)
+      lens <- vapply(seq_along(a), function(i){
+        v <- input[[paste0("len_", i)]]; if (is.null(v) || is.na(v)) 1L else max(1L, as.integer(v)) },
+        integer(1))
+      arms_df <- tibble(PitcherId = pid_of(a), length = lens)
+      starter_pid <- if (!is.null(input$seqstarter) && nzchar(input$seqstarter)) pid_of(input$seqstarter) else NULL
+      nmmap <- setNames(PITCHERS$Pitcher, PITCHERS$PitcherId)
+      tbl <- sequence_xrv(km, lineup(), arms_df, CURRENT_SEASON, starter=starter_pid, names=nmmap)
+      list(kind="seq", ctx=ctx, tbl=tbl, lens=setNames(arms_df$length, arms_df$PitcherId))
     }
   })
 
@@ -141,7 +152,7 @@ server <- function(input, output, session){
       r <- sim_matchup(km, o$ctx$lineup, pid, o$ctx$season, o$ctx$innings, o$ctx$sims)
       list(kind="rank", label=o$tbl$Pitcher[i], r=r)
     } else {
-      ord <- str_split(o$tbl$order_ids[i], " \u2192 ")[[1]]
+      ord <- str_split(o$tbl$order_ids[i], "\\|")[[1]]
       s <- sim_sequence(km, o$ctx$lineup, ord, o$lens, o$ctx$season, o$ctx$sims)
       seg <- sequence_detail(km, o$ctx$lineup, ord, o$lens, o$ctx$season) %>%
         left_join(PITCHERS %>% select(PitcherId, Pitcher), by="PitcherId") %>%

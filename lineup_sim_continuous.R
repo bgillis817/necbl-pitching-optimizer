@@ -91,12 +91,10 @@ rank_matchups <- function(km, lineup, pitcher_ids, season, innings=6, n_sims=150
 # arms_df: tibble(PitcherId, length)  (length = batters faced, min 1).
 # Finds the ORDER of arms minimizing total outing xRV. Exact for <=7 arms,
 # greedy beyond. TTO is taken from the lineup turn (pos %/% 9).
-sequence_xrv <- function(km, lineup, arms_df, season, starter=NULL) {
+sequence_xrv <- function(km, lineup, arms_df, season, starter=NULL, names=NULL) {
   arms_df <- as_tibble(arms_df)
   arms_df$length <- pmax(1L, as.integer(arms_df$length))
   ids <- arms_df$PitcherId; len <- setNames(arms_df$length, ids)
-  total <- sum(len)
-  # cache pa xrv per (pid, slot, tto) since orders reuse them
   cache <- new.env()
   pa_x <- function(pid, slot, tto){
     key <- paste(pid, slot, tto); v <- cache[[key]]
@@ -114,27 +112,28 @@ sequence_xrv <- function(km, lineup, arms_df, season, starter=NULL) {
     }
     tot
   }
-  # if a starter is fixed, only optimize the order of the remaining arms,
-  # then prepend the starter to every candidate order.
+  mk <- function(ord){
+    nms <- if (!is.null(names)) unname(names[ord]) else ord
+    nms[is.na(nms)] <- ord[is.na(nms)]
+    tibble(order = paste(nms, collapse=" \u2192 "),
+           order_ids = paste(ord, collapse="|"),
+           xrv = eval_order(ord))
+  }
   fixed <- if (!is.null(starter) && starter %in% ids) starter else NULL
   free  <- if (is.null(fixed)) ids else setdiff(ids, fixed)
   prepend <- function(ord) if (is.null(fixed)) ord else c(fixed, ord)
   if (length(free) <= 7) {
-    if (length(free) == 0) { ord <- prepend(character())
-      return(tibble(order = paste(ord, collapse=" \u2192 "), xrv = eval_order(ord))) }
+    if (length(free) == 0) return(mk(prepend(character())))
     perms <- gtools::permutations(length(free), length(free), free)
-    res <- map_dfr(seq_len(nrow(perms)), function(i){
-      ord <- prepend(perms[i,]); tibble(order = paste(ord, collapse=" \u2192 "), xrv = eval_order(ord)) })
+    res <- map_dfr(seq_len(nrow(perms)), function(i) mk(prepend(perms[i,])))
     res %>% arrange(xrv)
   } else {
-    # greedy: build the order one arm at a time, picking the next arm that
-    # yields the lowest running xRV given what's placed so far.
     rem <- free; ord <- if (is.null(fixed)) character() else fixed
     while (length(rem)) {
       best <- map_dfr(rem, function(p) tibble(p=p, x=eval_order(c(ord,p))))
       pick <- best$p[which.min(best$x)]; ord <- c(ord, pick); rem <- setdiff(rem, pick)
     }
-    tibble(order = paste(ord, collapse=" \u2192 "), xrv = eval_order(ord))
+    mk(ord)
   }
 }
 
