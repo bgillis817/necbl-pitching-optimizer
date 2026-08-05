@@ -26,7 +26,7 @@ rt <- reactableTheme(backgroundColor="#1E293B", color="#F1F5F9", borderColor="#3
   stripedColor="#273448", highlightColor="#2D3F58",
   headerStyle=list(backgroundColor="#0F172A", color="#94A3B8"))
 
-ui <- page_navbar(title="NECBL Matchup Sim", theme=navy,
+ui <- page_navbar(title="NECBL Matchup Sim", theme=navy, fillable=FALSE,
   nav_panel("Pitcher vs Lineup", icon=icon("crosshairs"),
     layout_sidebar(sidebar=sidebar(width=340,
       selectInput("team","Opponent", choices=TEAMS),
@@ -49,11 +49,11 @@ ui <- page_navbar(title="NECBL Matchup Sim", theme=navy,
       hr(), p("xRV = expected run value of sequence.",
               class="text-muted small")),
     layout_columns(col_widths=c(7,5),
-      card(card_header("Result"), uiOutput("head"), reactableOutput("tbl"),
+      card(fill=FALSE, card_header("Result"), uiOutput("head"), reactableOutput("tbl"),
            plotlyOutput("dist", height="220px"),
            uiOutput("detail_head"), reactableOutput("detail_tbl"),
            plotlyOutput("detail_dist", height="300px")),
-      card(card_header("Lineup"), reactableOutput("lineup_tbl"))))))
+      card(fill=FALSE, card_header("Lineup"), reactableOutput("lineup_tbl"))))))
 
 server <- function(input, output, session){
   output$lineup_ui <- renderUI({
