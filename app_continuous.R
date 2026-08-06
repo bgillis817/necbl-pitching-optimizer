@@ -101,7 +101,8 @@ server <- function(input, output, session){
       req(length(input$arms)>=1)
       tbl <- rank_matchups(km, lineup(), pid_of(input$arms), CURRENT_SEASON,
                            innings=input$innings, n_sims=input$sims) %>%
-        left_join(PITCHERS %>% select(PitcherId, Pitcher), by="PitcherId")
+        left_join(PITCHERS %>% select(PitcherId, Pitcher), by="PitcherId") %>%
+        arrange(mean_runs, xrv)   # fewest runs allowed first; xRV breaks ties
       list(kind="rank", ctx=ctx, tbl=tbl)
     } else {
       a <- seq_arm_order(); req(length(a) >= 1)
@@ -112,7 +113,22 @@ server <- function(input, output, session){
       starter_pid <- if (!is.null(input$seqstarter) && nzchar(input$seqstarter)) pid_of(input$seqstarter) else NULL
       nmmap <- setNames(PITCHERS$Pitcher, PITCHERS$PitcherId)
       tbl <- sequence_xrv(km, lineup(), arms_df, CURRENT_SEASON, starter=starter_pid, names=nmmap)
-      list(kind="seq", ctx=ctx, tbl=tbl, lens=setNames(arms_df$length, arms_df$PitcherId))
+      lens <- setNames(arms_df$length, arms_df$PitcherId)
+      # xRV scores every permutation analytically; mean runs needs a sim per order,
+      # so shortlist the best SEQ_RANK_N by xRV and re-rank those on simulated runs
+      SEQ_RANK_N <- 20
+      rs <- min(input$sims, 1000)                 # lighter sims for ranking
+      tbl <- tbl %>% slice_head(n = min(nrow(tbl), SEQ_RANK_N))
+      withProgress(message = "Simulating orders", value = 0, {
+        mr <- vapply(seq_len(nrow(tbl)), function(i) {
+          incProgress(1/nrow(tbl))
+          ord <- str_split(tbl$order_ids[i], "\\|")[[1]]
+          sim_sequence(km, lineup(), ord, lens, CURRENT_SEASON, rs)$mean_runs
+        }, numeric(1))
+      })
+      tbl$mean_runs <- mr
+      tbl <- tbl %>% arrange(mean_runs, xrv)      # fewest runs allowed first
+      list(kind="seq", ctx=ctx, tbl=tbl, lens=lens)
     }
   })
 
@@ -131,12 +147,13 @@ server <- function(input, output, session){
         `K%`=round(100*K,1), `BB%`=round(100*BB,1), `HR%`=round(100*HR,1))
       reactable(d, theme=rt, defaultPageSize=9)
     } else if (o$kind=="rank") {
-      d <- o$tbl %>% transmute(Pitcher, xRV=round(xrv,2), `Mean R`=round(mean_runs,2),
+      d <- o$tbl %>% transmute(Pitcher, `Mean R`=round(mean_runs,2), xRV=round(xrv,2),
         P10=round(p10,1), P90=round(p90,1), `Scoreless%`=round(100*scoreless,1))
       reactable(d, theme=rt, striped=TRUE, highlight=TRUE, defaultPageSize=12,
         selection="single", onClick="select")
     } else {
-      d <- o$tbl %>% transmute(`Order (best first)`=order, `Total xRV`=round(xrv,2))
+      d <- o$tbl %>% transmute(`Order (best first)`=order,
+        `Mean R`=round(mean_runs,2), `Total xRV`=round(xrv,2))
       reactable(d, theme=rt, striped=TRUE, highlight=TRUE, defaultPageSize=15,
         selection="single", onClick="select")
     }
