@@ -1,3 +1,4 @@
+
 # ============================================================================
 #  app_continuous.R - pick a pitcher + a lineup -> outing xRV, run distribution,
 #  per-hitter breakdown; or rank a set of arms vs the lineup by xRV.
